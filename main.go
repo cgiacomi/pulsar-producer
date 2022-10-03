@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -14,94 +13,39 @@ import (
 
 type (
 	Config struct {
-		ClientID     string
-		ClientSecret string
-		IssuerURL    string
-		Scope        string
-		Audience     string
-		PulsarURI    string
-		Topic        string
+		PulsarURI string
+		Topic     string
 	}
 )
 
 func main() {
 	var config Config
-	clientID, isClientIDSet := os.LookupEnv("CLIENT_ID")
-	if isClientIDSet {
-		config.ClientID = clientID
+	pulsarURI, isPulsarURISet := os.LookupEnv("PULSAR_URI")
+	if !isPulsarURISet {
+		log.Fatal("Pulsar URI not set")
 	}
 
-	clientSecret, isClientSecretSet := os.LookupEnv("CLIENT_SECRET")
-	if isClientSecretSet {
-		config.ClientSecret = clientSecret
+	topic, isTopicSet := os.LookupEnv("TOPIC")
+	if !isTopicSet {
+		log.Fatal("Pulsar Topic not set")
 	}
 
-	issuerURL, isIssuerURLSet := os.LookupEnv("ISSUER_URL")
-	if isIssuerURLSet {
-		config.IssuerURL = issuerURL
-	}
+	config.PulsarURI = pulsarURI
+	config.Topic = topic
 
-	if scope, isScopeSet := os.LookupEnv("SCOPE"); isScopeSet {
-		config.Scope = scope
-	}
-
-	if audience, isAudienceSet := os.LookupEnv("AUDIENCE"); isAudienceSet {
-		config.Audience = audience
-	}
-
-	if pulsarURI, isPulsarURISet := os.LookupEnv("PULSAR_URI"); isPulsarURISet {
-		config.PulsarURI = pulsarURI
-	}
-
-	if topic, isTopicSet := os.LookupEnv("TOPIC"); isTopicSet {
-		config.Topic = topic
-	}
-
-	var pulsarKeyFile []byte
 	var client pulsar.Client
 	var clientErr error
 
-	if isClientIDSet && isClientSecretSet {
-		// If we are producing to an Pulsar that implements OAuth2 auth
-		var err error
-		pulsarKeyFile, err = json.Marshal(map[string]string{
-			"type":          "client_credentials",
-			"client_id":     config.ClientID,
-			"client_secret": config.ClientSecret,
-			"issuer_url":    config.IssuerURL,
-			"scope":         config.Scope,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		client, clientErr = pulsar.NewClient(pulsar.ClientOptions{
-			URL:               config.PulsarURI,
-			OperationTimeout:  30 * time.Second,
-			ConnectionTimeout: 30 * time.Second,
-			Logger:            pulsarLog.DefaultNopLogger(),
-			Authentication: pulsar.NewAuthenticationOAuth2(map[string]string{
-				"type":       "client_credentials",
-				"issuerUrl":  config.IssuerURL,
-				"clientId":   config.ClientID,
-				"audience":   config.Audience,
-				"scope":      config.Scope,
-				"privateKey": fmt.Sprintf("data://%s", pulsarKeyFile),
-			}),
-		})
-
-	} else {
-		// Open Pulsar cluster
-		client, clientErr = pulsar.NewClient(pulsar.ClientOptions{
-			URL:               config.PulsarURI,
-			OperationTimeout:  30 * time.Second,
-			ConnectionTimeout: 30 * time.Second,
-			Logger:            pulsarLog.DefaultNopLogger(),
-		})
-	}
+	// Open Pulsar cluster
+	client, clientErr = pulsar.NewClient(pulsar.ClientOptions{
+		URL:               config.PulsarURI,
+		OperationTimeout:  30 * time.Second,
+		ConnectionTimeout: 30 * time.Second,
+		Logger:            pulsarLog.DefaultNopLogger(),
+	})
 
 	if clientErr != nil {
-		log.Fatal(clientErr)
+		log.Fatal("Error creating client - TERMINATING", clientErr)
 	}
 
 	defer client.Close()
@@ -110,19 +54,29 @@ func main() {
 		Topic: config.Topic,
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Error creating producer - TERMINATING", err)
 	}
 
 	defer producer.Close()
 
+	log.Println("Sending messages")
 	for i := 0; i < 50; i++ {
-		producer.SendAsync(context.Background(), &pulsar.ProducerMessage{
-			Value: fmt.Sprintf("Test Message: %d", i),
-		}, func(id pulsar.MessageID, message *pulsar.ProducerMessage, err error) {
-			if err != nil {
-				log.Printf("error producing message: %v\n", err)
-			}
-			log.Println("successfully produced message")
-		})
+		producer.SendAsync(
+			context.Background(),
+			&pulsar.ProducerMessage{
+				Payload: []byte(fmt.Sprintf("{\"name\":\"cgiacomi\",\"timestamp\":%d}", time.Now().Unix())),
+			},
+			func(id pulsar.MessageID, message *pulsar.ProducerMessage, err error) {
+				if err != nil {
+					log.Printf("error producing message: %v\n", err)
+				}
+
+				fmt.Printf("successfully produced message: %s\n", message.Payload)
+			})
+	}
+
+	err = producer.Flush()
+	if err != nil {
+		log.Fatal("Error flushing producer")
 	}
 }
